@@ -52,25 +52,109 @@ async function searchSerper(query) {
 }
 
 // ── EAN lookup ────────────────────────────────────────────────────────────
+const EAN_TIMEOUT = 8000;
+const EAN_HEADERS = { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' };
+
+async function fetchJson(url, timeout = EAN_TIMEOUT) {
+  try {
+    const r = await fetch(url, { headers: EAN_HEADERS, signal: AbortSignal.timeout(timeout) });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+
+async function openFoodFacts(ean) {
+  const data = await fetchJson(`https://world.openfoodfacts.org/api/v2/product/${ean}.json`);
+  if (!data || data.status !== 1) return null;
+  const p = data.product;
+  const imgs = [...new Set([p.image_url, p.image_front_url, p.image_ingredients_url, p.image_nutrition_url].filter(Boolean))];
+  return { source: 'openfoodfacts', name: p.product_name || '', images: imgs };
+}
+
+async function openBeautyFacts(ean) {
+  const data = await fetchJson(`https://world.openbeautyfacts.org/api/v2/product/${ean}.json`);
+  if (!data || data.status !== 1) return null;
+  const p = data.product;
+  const imgs = [...new Set([p.image_url, p.image_front_url].filter(Boolean))];
+  return { source: 'openbeautyfacts', name: p.product_name || '', images: imgs };
+}
+
+async function openPetFoodFacts(ean) {
+  const data = await fetchJson(`https://world.openpetfoodfacts.org/api/v2/product/${ean}.json`);
+  if (!data || data.status !== 1) return null;
+  const p = data.product;
+  const imgs = [...new Set([p.image_url, p.image_front_url].filter(Boolean))];
+  return { source: 'openpetfoodfacts', name: p.product_name || '', images: imgs };
+}
+
+async function upcitemdb(ean) {
+  const data = await fetchJson(`https://api.upcitemdb.com/prod/trial/lookup?upc=${ean}`);
+  if (!data) return null;
+  const item = data.items?.[0];
+  if (!item) return null;
+  return { source: 'upcitemdb', name: item.title || '', images: item.images || [] };
+}
+
+const VTEX_STORES = [
+  { name: 'Despensa (SV)', base: 'https://www.ladespensadedonjuan.com.sv', priority: 'high' },
+  { name: 'Walmart (GT)',  base: 'https://www.walmart.com.gt',             priority: 'high' },
+  { name: 'Walmart (CR)',  base: 'https://www.walmart.co.cr',              priority: 'medium' },
+  { name: 'Éxito (CO)',    base: 'https://www.exito.com',                  priority: 'low' },
+  { name: 'Carulla (CO)', base: 'https://www.carulla.com',                priority: 'low' },
+  { name: 'Jumbo (CO)',    base: 'https://www.tiendasjumbo.co',            priority: 'low' },
+  { name: 'Chedraui (MX)',base: 'https://www.chedraui.com.mx',            priority: 'low' },
+  { name: 'Jumbo (AR)',    base: 'https://www.jumbo.com.ar',               priority: 'low' },
+  { name: 'Jumbo (CL)',    base: 'https://www.jumbo.cl',                   priority: 'low' },
+  { name: 'Wong (PE)',     base: 'https://www.wong.pe',                    priority: 'low' },
+  { name: 'Carrefour (BR)',base: 'https://www.carrefour.com.br',           priority: 'low' },
+];
+
+async function vtexLookup(store, ean) {
+  const data = await fetchJson(`${store.base}/api/catalog_system/pub/products/search?fq=alternateIds_Ean:${ean}`);
+  if (Array.isArray(data) && data.length > 0) {
+    const p = data[0];
+    for (const item of (p.items || [])) {
+      const imgs = (item.images || []).map(i => i.imageUrl).filter(Boolean);
+      if (imgs.length) return { source: `vtex-${store.name}`, name: p.productName || '', images: imgs };
+    }
+  }
+  const sku = await fetchJson(`${store.base}/api/catalog_system/pub/sku/stockkeepingunitbyean/${ean}`);
+  if (sku?.Id) {
+    const imgs = (sku.Images || []).filter(i => typeof i === 'object').map(i => i.ImageUrl).filter(Boolean);
+    if (imgs.length) return { source: `vtex-${store.name}`, name: sku.NameComplete || '', images: imgs };
+  }
+  return null;
+}
+
 async function lookupEAN(ean) {
+  const highVtex = VTEX_STORES.filter(s => s.priority === 'high');
+  const lowVtex  = VTEX_STORES.filter(s => s.priority !== 'high');
+
+  const wave1 = await Promise.allSettled([
+    openFoodFacts(ean),
+    upcitemdb(ean),
+    openBeautyFacts(ean),
+    openPetFoodFacts(ean),
+    ...highVtex.map(s => vtexLookup(s, ean)),
+  ]);
+
+  const results = wave1.filter(r => r.status === 'fulfilled' && r.value).map(r => r.value);
+
+  if (!results.length) {
+    const wave2 = await Promise.allSettled(lowVtex.map(s => vtexLookup(s, ean)));
+    wave2.filter(r => r.status === 'fulfilled' && r.value).forEach(r => results.push(r.value));
+  }
+
+  const seenUrls = new Set();
   const images = [];
-  const opts = { signal: AbortSignal.timeout(8000) };
-
-  const sources = [
-    fetch(`https://world.openfoodfacts.org/api/v0/product/${ean}.json`, opts)
-      .then(r => r.json()).then(d => {
-        const img = d?.product?.image_url;
-        if (img) images.push({ imageUrl: img, title: d.product?.product_name || ean, source: 'openfoodfacts', width: 0, height: 0 });
-      }).catch(() => {}),
-    fetch(`https://api.upcitemdb.com/prod/trial/lookup?upc=${ean}`, opts)
-      .then(r => r.json()).then(d => {
-        (d?.items?.[0]?.images || []).forEach(img =>
-          images.push({ imageUrl: img, title: d.items[0]?.title || ean, source: 'upcitemdb', width: 0, height: 0 })
-        );
-      }).catch(() => {}),
-  ];
-
-  await Promise.allSettled(sources);
+  for (const r of results) {
+    for (const url of (r.images || [])) {
+      if (!seenUrls.has(url)) {
+        seenUrls.add(url);
+        images.push({ imageUrl: url, title: r.name || ean, source: r.source, width: 0, height: 0 });
+      }
+    }
+  }
   return images;
 }
 
