@@ -48,11 +48,11 @@ router.get('/activas', async (req, res) => {
     const [rows] = await pool.query(`
       SELECT STRAIGHT_JOIN
         rm.barra,
-        rm.descripcion,
-        rm.precio   AS precio_oferta,
-        rm.f_inicio,
-        rm.f_fin,
-        rm.cantidad,
+        MAX(rm.descripcion) AS descripcion,
+        MAX(rm.precio)      AS precio_oferta,
+        MAX(rm.f_inicio)    AS f_inicio,
+        MAX(rm.f_fin)       AS f_fin,
+        MAX(rm.cantidad)    AS cantidad,
         cg.imagen,
         cg.categoria,
         cg.marca,
@@ -66,8 +66,8 @@ router.get('/activas', async (req, res) => {
       WHERE rm.f_fin_dt >= CURDATE()
         AND rm.f_inicio_dt <= CURDATE()
         AND TRIM(rm.barra) != ''
-      GROUP BY rm.barra, rm.precio, rm.f_inicio, rm.f_fin
-      ORDER BY rm.fecha DESC
+      GROUP BY rm.barra
+      ORDER BY MAX(rm.fecha) DESC
       LIMIT ?
     `, [limit]);
 
