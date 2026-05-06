@@ -46,12 +46,12 @@ router.get('/activas', async (req, res) => {
     const [rows] = await pool.query(`
       SELECT
         rm.barra,
-        MAX(rm.descripcion) AS descripcion,
-        MAX(rm.precio)      AS precio_oferta,
-        MAX(rm.f_inicio)    AS f_inicio,
-        MAX(rm.f_fin)       AS f_fin,
-        MAX(rm.cantidad)    AS cantidad,
-        cg.imagen,
+        MAX(rm.descripcion)           AS descripcion,
+        MAX(rm.precio)                AS precio_oferta,
+        MAX(rm.f_inicio)              AS f_inicio,
+        MAX(rm.f_fin)                 AS f_fin,
+        MAX(rm.cantidad)              AS cantidad,
+        COALESCE(c.imagen, cg.imagen) AS imagen,
         cg.categoria,
         cg.marca,
         u.user_uuid,
@@ -59,8 +59,9 @@ router.get('/activas', async (req, res) => {
         u.nombre,
         u.photo
       FROM rotulos_mini rm
-      INNER JOIN codigos_global cg ON cg.barra = rm.barra
-      LEFT JOIN usuarios u ON u.user_uuid = rm.user_uuid
+      LEFT JOIN codigos c             ON c.barra  = rm.barra
+      LEFT JOIN codigos_global cg     ON cg.barra = rm.barra
+      LEFT JOIN usuarios u            ON u.user_uuid = rm.user_uuid
       WHERE rm.f_fin_dt >= CURDATE()
         AND rm.f_inicio_dt <= CURDATE()
         AND TRIM(rm.barra) != ''
@@ -92,20 +93,21 @@ router.get('/recomendadas', async (req, res) => {
       SELECT
         rm.barra,
         rm.descripcion,
-        rm.precio   AS precio_oferta,
+        rm.precio                     AS precio_oferta,
         rm.f_inicio,
         rm.f_fin,
-        cg.imagen,
+        COALESCE(c.imagen, cg.imagen) AS imagen,
         cg.categoria,
         cg.marca,
         u.user_uuid,
         u.username,
         u.nombre,
         u.photo,
-        COUNT(*)    AS veces_generado
+        COUNT(*)                      AS veces_generado
       FROM rotulos_mini rm
-      INNER JOIN codigos_global cg ON cg.barra = rm.barra
-      LEFT JOIN usuarios u ON u.user_uuid = rm.user_uuid
+      LEFT JOIN codigos c             ON c.barra  = rm.barra
+      LEFT JOIN codigos_global cg     ON cg.barra = rm.barra
+      LEFT JOIN usuarios u            ON u.user_uuid = rm.user_uuid
       WHERE rm.f_fin_dt >= CURDATE()
         AND rm.f_inicio_dt <= CURDATE()
         AND TRIM(rm.barra) != ''
@@ -136,11 +138,11 @@ router.get('/hoy', async (req, res) => {
       SELECT
         rm.barra,
         rm.descripcion,
-        rm.precio   AS precio_oferta,
+        rm.precio                     AS precio_oferta,
         rm.f_inicio,
         rm.f_fin,
         rm.cantidad,
-        cg.imagen,
+        COALESCE(c.imagen, cg.imagen) AS imagen,
         cg.categoria,
         cg.marca,
         u.user_uuid,
@@ -148,8 +150,9 @@ router.get('/hoy', async (req, res) => {
         u.nombre,
         u.photo
       FROM rotulos_mini rm
-      LEFT JOIN codigos_global cg ON cg.barra = rm.barra
-      LEFT JOIN usuarios u ON u.user_uuid = rm.user_uuid
+      LEFT JOIN codigos c             ON c.barra  = rm.barra
+      LEFT JOIN codigos_global cg     ON cg.barra = rm.barra
+      LEFT JOIN usuarios u            ON u.user_uuid = rm.user_uuid
       WHERE (rm.f_inicio_dt = CURDATE() OR STR_TO_DATE(rm.f_inicio, '%d/%m/%Y') = CURDATE())
         AND (rm.f_fin_dt >= CURDATE() OR rm.f_fin_dt IS NULL)
         AND TRIM(rm.barra) != ''
