@@ -34,6 +34,19 @@ async function agregarPrecioActual(rows) {
   return rows.map(r => ({ ...r, precio_actual: mapaPrecios[r.barra] ?? null }));
 }
 
+// Fallback: si codigos_global no tiene imagen, busca en codigos
+async function agregarImagenFallback(rows) {
+  const sinImagen = [...new Set(rows.filter(r => !r.imagen).map(r => r.barra))];
+  if (!sinImagen.length) return rows;
+  const placeholders = sinImagen.map(() => '?').join(',');
+  const [imgs] = await pool.query(
+    `SELECT barra, imagen FROM codigos WHERE barra IN (${placeholders}) AND imagen IS NOT NULL AND imagen != '' GROUP BY barra`,
+    sinImagen
+  );
+  const mapaImgs = Object.fromEntries(imgs.map(i => [i.barra, i.imagen]));
+  return rows.map(r => ({ ...r, imagen: r.imagen || mapaImgs[r.barra] || null }));
+}
+
 // GET /api/ofertas/activas
 router.get('/activas', async (req, res) => {
   try {
@@ -46,12 +59,12 @@ router.get('/activas', async (req, res) => {
     const [rows] = await pool.query(`
       SELECT
         rm.barra,
-        MAX(rm.descripcion)           AS descripcion,
-        MAX(rm.precio)                AS precio_oferta,
-        MAX(rm.f_inicio)              AS f_inicio,
-        MAX(rm.f_fin)                 AS f_fin,
-        MAX(rm.cantidad)              AS cantidad,
-        COALESCE(c.imagen, cg.imagen) AS imagen,
+        MAX(rm.descripcion) AS descripcion,
+        MAX(rm.precio)      AS precio_oferta,
+        MAX(rm.f_inicio)    AS f_inicio,
+        MAX(rm.f_fin)       AS f_fin,
+        MAX(rm.cantidad)    AS cantidad,
+        cg.imagen,
         cg.categoria,
         cg.marca,
         u.user_uuid,
@@ -59,9 +72,8 @@ router.get('/activas', async (req, res) => {
         u.nombre,
         u.photo
       FROM rotulos_mini rm
-      LEFT JOIN codigos c             ON c.barra  = rm.barra
-      LEFT JOIN codigos_global cg     ON cg.barra = rm.barra
-      LEFT JOIN usuarios u            ON u.user_uuid = rm.user_uuid
+      LEFT JOIN codigos_global cg ON cg.barra = rm.barra
+      LEFT JOIN usuarios u        ON u.user_uuid = rm.user_uuid
       WHERE rm.f_fin_dt >= CURDATE()
         AND rm.f_inicio_dt <= CURDATE()
         AND TRIM(rm.barra) != ''
@@ -70,7 +82,8 @@ router.get('/activas', async (req, res) => {
       LIMIT ? OFFSET ?
     `, [limit, offset]);
 
-    const ofertas = await agregarPrecioActual(rows);
+    let ofertas = await agregarPrecioActual(rows);
+    ofertas = await agregarImagenFallback(ofertas);
     const result = { ok: true, total: ofertas.length, hasMore: rows.length === limit, ofertas };
     setCache(cacheKey, result, TTL.activas);
     res.json(result);
@@ -93,21 +106,20 @@ router.get('/recomendadas', async (req, res) => {
       SELECT
         rm.barra,
         rm.descripcion,
-        rm.precio                     AS precio_oferta,
+        rm.precio   AS precio_oferta,
         rm.f_inicio,
         rm.f_fin,
-        COALESCE(c.imagen, cg.imagen) AS imagen,
+        cg.imagen,
         cg.categoria,
         cg.marca,
         u.user_uuid,
         u.username,
         u.nombre,
         u.photo,
-        COUNT(*)                      AS veces_generado
+        COUNT(*)    AS veces_generado
       FROM rotulos_mini rm
-      LEFT JOIN codigos c             ON c.barra  = rm.barra
-      LEFT JOIN codigos_global cg     ON cg.barra = rm.barra
-      LEFT JOIN usuarios u            ON u.user_uuid = rm.user_uuid
+      LEFT JOIN codigos_global cg ON cg.barra = rm.barra
+      LEFT JOIN usuarios u        ON u.user_uuid = rm.user_uuid
       WHERE rm.f_fin_dt >= CURDATE()
         AND rm.f_inicio_dt <= CURDATE()
         AND TRIM(rm.barra) != ''
@@ -116,7 +128,8 @@ router.get('/recomendadas', async (req, res) => {
       LIMIT ? OFFSET ?
     `, [limit, offset]);
 
-    const recomendadas = await agregarPrecioActual(rows);
+    let recomendadas = await agregarPrecioActual(rows);
+    recomendadas = await agregarImagenFallback(recomendadas);
     const result = { ok: true, total: recomendadas.length, hasMore: rows.length === limit, recomendadas };
     setCache(cacheKey, result, TTL.recomendadas);
     res.json(result);
@@ -138,11 +151,11 @@ router.get('/hoy', async (req, res) => {
       SELECT
         rm.barra,
         rm.descripcion,
-        rm.precio                     AS precio_oferta,
+        rm.precio   AS precio_oferta,
         rm.f_inicio,
         rm.f_fin,
         rm.cantidad,
-        COALESCE(c.imagen, cg.imagen) AS imagen,
+        cg.imagen,
         cg.categoria,
         cg.marca,
         u.user_uuid,
@@ -150,9 +163,8 @@ router.get('/hoy', async (req, res) => {
         u.nombre,
         u.photo
       FROM rotulos_mini rm
-      LEFT JOIN codigos c             ON c.barra  = rm.barra
-      LEFT JOIN codigos_global cg     ON cg.barra = rm.barra
-      LEFT JOIN usuarios u            ON u.user_uuid = rm.user_uuid
+      LEFT JOIN codigos_global cg ON cg.barra = rm.barra
+      LEFT JOIN usuarios u        ON u.user_uuid = rm.user_uuid
       WHERE (rm.f_inicio_dt = CURDATE() OR STR_TO_DATE(rm.f_inicio, '%d/%m/%Y') = CURDATE())
         AND (rm.f_fin_dt >= CURDATE() OR rm.f_fin_dt IS NULL)
         AND TRIM(rm.barra) != ''
@@ -161,7 +173,8 @@ router.get('/hoy', async (req, res) => {
       LIMIT ?
     `, [limit]);
 
-    const hoy = await agregarPrecioActual(rows);
+    let hoy = await agregarPrecioActual(rows);
+    hoy = await agregarImagenFallback(hoy);
     const result = { ok: true, total: hoy.length, hoy };
     setCache(cacheKey, result, TTL.hoy);
     res.json(result);
