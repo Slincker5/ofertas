@@ -148,10 +148,10 @@ router.get('/hoy', async (req, res) => {
         u.nombre,
         u.photo
       FROM rotulos_mini rm
-      INNER JOIN codigos_global cg ON cg.barra = rm.barra
+      LEFT JOIN codigos_global cg ON cg.barra = rm.barra
       LEFT JOIN usuarios u ON u.user_uuid = rm.user_uuid
-      WHERE rm.f_inicio_dt = CURDATE()
-        AND rm.f_fin_dt >= CURDATE()
+      WHERE (rm.f_inicio_dt = CURDATE() OR STR_TO_DATE(rm.f_inicio, '%d/%m/%Y') = CURDATE())
+        AND (rm.f_fin_dt >= CURDATE() OR rm.f_fin_dt IS NULL)
         AND TRIM(rm.barra) != ''
       GROUP BY rm.barra, rm.precio, rm.f_inicio, rm.f_fin
       ORDER BY rm.fecha DESC
