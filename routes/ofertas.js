@@ -46,7 +46,7 @@ router.get('/activas', async (req, res) => {
     if (cached) return res.json(cached);
 
     const [rows] = await pool.query(`
-      SELECT STRAIGHT_JOIN
+      SELECT
         rm.barra,
         MAX(rm.descripcion) AS descripcion,
         MAX(rm.precio)      AS precio_oferta,
@@ -90,7 +90,7 @@ router.get('/recomendadas', async (req, res) => {
     if (cached) return res.json(cached);
 
     const [rows] = await pool.query(`
-      SELECT STRAIGHT_JOIN
+      SELECT
         rm.barra,
         rm.descripcion,
         rm.precio   AS precio_oferta,
@@ -135,7 +135,7 @@ router.get('/hoy', async (req, res) => {
     if (cached) return res.json(cached);
 
     const [rows] = await pool.query(`
-      SELECT STRAIGHT_JOIN
+      SELECT
         rm.barra,
         rm.descripcion,
         rm.precio   AS precio_oferta,
