@@ -146,4 +146,48 @@ router.post('/subir', async (req, res) => {
   }
 });
 
+// ── POST /api/imagenes/subir-base64 ──────────────────────────────────────
+// body: { barra, imageBase64, contentType }
+router.post('/subir-base64', async (req, res) => {
+  const { barra, imageBase64, contentType = 'image/jpeg' } = req.body;
+  if (!barra || !imageBase64) return res.status(400).json({ ok: false, error: 'barra e imageBase64 requeridos' });
+
+  try {
+    const buffer = Buffer.from(imageBase64, 'base64');
+    const extMap = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif', 'image/avif': 'avif' };
+    const ext = extMap[contentType.split(';')[0].trim()] || 'jpg';
+    const key = `${process.env.S3_KEY_PREFIX || ''}${randomUUID()}.${ext}`;
+
+    await s3.send(new PutObjectCommand({
+      Bucket:      process.env.AWS_BUCKET,
+      Key:         key,
+      Body:        buffer,
+      ContentType: contentType,
+    }));
+
+    const cdnUrl = `${process.env.CDN_BASE_URL}/${key}`;
+
+    const [resultCodigos] = await pool.query(
+      `UPDATE codigos SET imagen = ? WHERE TRIM(barra) = ? AND (imagen IS NULL OR TRIM(imagen) = '')`,
+      [cdnUrl, barra.trim()]
+    );
+    const [resultGlobal] = await pool.query(
+      `UPDATE codigos_global SET imagen = ? WHERE TRIM(barra) = ? AND (imagen IS NULL OR TRIM(imagen) = '')`,
+      [cdnUrl, barra.trim()]
+    );
+
+    res.json({
+      ok: true,
+      cdnUrl,
+      actualizados: {
+        codigos:        resultCodigos.affectedRows,
+        codigos_global: resultGlobal.affectedRows,
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 module.exports = router;
