@@ -3,7 +3,6 @@ const pool = require('../db/connection');
 
 const router = Router();
 
-// Cache simple en memoria
 const cache = new Map();
 const TTL = {
   activas:      60 * 1000,
@@ -22,29 +21,68 @@ function setCache(key, data, ttl) {
   cache.set(key, { data, expires: Date.now() + ttl });
 }
 
+// Enriquece con imagen/categoria/marca: primero codigos_global, fallback codigos
+async function agregarDatosProducto(rows) {
+  if (!rows.length) return rows;
+  const barras = [...new Set(rows.map(r => r.barra))];
+  const ph = barras.map(() => '?').join(',');
+
+  const [[cgRows], [cRows]] = await Promise.all([
+    pool.query(`SELECT barra, imagen, categoria, marca FROM codigos_global WHERE barra IN (${ph})`, barras),
+    pool.query(`SELECT barra, imagen FROM codigos WHERE barra IN (${ph}) AND imagen IS NOT NULL AND imagen != ''`, barras),
+  ]);
+
+  const mapaCg = Object.fromEntries(cgRows.map(r => [r.barra, r]));
+  const mapaC  = Object.fromEntries(cRows.map(r => [r.barra, r.imagen]));
+
+  return rows.map(r => {
+    const cg = mapaCg[r.barra] || {};
+    return {
+      ...r,
+      imagen:    cg.imagen    || mapaC[r.barra] || null,
+      categoria: cg.categoria || null,
+      marca:     cg.marca     || null,
+    };
+  });
+}
+
+// Enriquece con precio actual desde codigos
 async function agregarPrecioActual(rows) {
   if (!rows.length) return rows;
   const barras = [...new Set(rows.map(r => r.barra))];
-  const placeholders = barras.map(() => '?').join(',');
+  const ph = barras.map(() => '?').join(',');
   const [precios] = await pool.query(
-    `SELECT barra, precio FROM codigos WHERE barra IN (${placeholders}) GROUP BY barra`,
+    `SELECT barra, precio FROM codigos WHERE barra IN (${ph}) GROUP BY barra`,
     barras
   );
-  const mapaPrecios = Object.fromEntries(precios.map(p => [p.barra, p.precio]));
-  return rows.map(r => ({ ...r, precio_actual: mapaPrecios[r.barra] ?? null }));
+  const mapa = Object.fromEntries(precios.map(p => [p.barra, p.precio]));
+  return rows.map(r => ({ ...r, precio_actual: mapa[r.barra] ?? null }));
 }
 
-// Fallback: si codigos_global no tiene imagen, busca en codigos
-async function agregarImagenFallback(rows) {
-  const sinImagen = [...new Set(rows.filter(r => !r.imagen).map(r => r.barra))];
-  if (!sinImagen.length) return rows;
-  const placeholders = sinImagen.map(() => '?').join(',');
-  const [imgs] = await pool.query(
-    `SELECT barra, imagen FROM codigos WHERE barra IN (${placeholders}) AND imagen IS NOT NULL AND imagen != '' GROUP BY barra`,
-    sinImagen
+// Enriquece con datos del usuario
+async function agregarUsuarios(rows) {
+  const uuids = [...new Set(rows.map(r => r.user_uuid).filter(Boolean))];
+  if (!uuids.length) return rows.map(r => ({ ...r, username: null, nombre: null, photo: null }));
+  const ph = uuids.map(() => '?').join(',');
+  const [usuarios] = await pool.query(
+    `SELECT user_uuid, username, nombre, photo FROM usuarios WHERE user_uuid IN (${ph})`,
+    uuids
   );
-  const mapaImgs = Object.fromEntries(imgs.map(i => [i.barra, i.imagen]));
-  return rows.map(r => ({ ...r, imagen: r.imagen || mapaImgs[r.barra] || null }));
+  const mapa = Object.fromEntries(usuarios.map(u => [u.user_uuid, u]));
+  return rows.map(r => {
+    const u = mapa[r.user_uuid] || {};
+    return { ...r, username: u.username || null, nombre: u.nombre || null, photo: u.photo || null };
+  });
+}
+
+async function enriquecer(rows) {
+  const [conProducto, conPrecio] = await Promise.all([
+    agregarDatosProducto(rows),
+    agregarPrecioActual(rows),
+  ]);
+  const mapaPrecios = Object.fromEntries(conPrecio.map(r => [r.barra, r.precio_actual]));
+  const merged = conProducto.map(r => ({ ...r, precio_actual: mapaPrecios[r.barra] ?? null }));
+  return agregarUsuarios(merged);
 }
 
 // GET /api/ofertas/activas
@@ -59,31 +97,22 @@ router.get('/activas', async (req, res) => {
     const [rows] = await pool.query(`
       SELECT
         rm.barra,
+        rm.user_uuid,
         MAX(rm.descripcion) AS descripcion,
         MAX(rm.precio)      AS precio_oferta,
         MAX(rm.f_inicio)    AS f_inicio,
         MAX(rm.f_fin)       AS f_fin,
-        MAX(rm.cantidad)    AS cantidad,
-        cg.imagen,
-        cg.categoria,
-        cg.marca,
-        u.user_uuid,
-        u.username,
-        u.nombre,
-        u.photo
+        MAX(rm.cantidad)    AS cantidad
       FROM rotulos_mini rm
-      LEFT JOIN codigos_global cg ON cg.barra = rm.barra
-      LEFT JOIN usuarios u        ON u.user_uuid = rm.user_uuid
       WHERE rm.f_fin_dt >= CURDATE()
         AND rm.f_inicio_dt <= CURDATE()
         AND TRIM(rm.barra) != ''
-      GROUP BY rm.barra
+      GROUP BY rm.barra, rm.user_uuid
       ORDER BY MAX(rm.fecha) DESC
       LIMIT ? OFFSET ?
     `, [limit, offset]);
 
-    let ofertas = await agregarPrecioActual(rows);
-    ofertas = await agregarImagenFallback(ofertas);
+    const ofertas = await enriquecer(rows);
     const result = { ok: true, total: ofertas.length, hasMore: rows.length === limit, ofertas };
     setCache(cacheKey, result, TTL.activas);
     res.json(result);
@@ -105,31 +134,22 @@ router.get('/recomendadas', async (req, res) => {
     const [rows] = await pool.query(`
       SELECT
         rm.barra,
+        rm.user_uuid,
         rm.descripcion,
-        rm.precio   AS precio_oferta,
+        rm.precio      AS precio_oferta,
         rm.f_inicio,
         rm.f_fin,
-        cg.imagen,
-        cg.categoria,
-        cg.marca,
-        u.user_uuid,
-        u.username,
-        u.nombre,
-        u.photo,
-        COUNT(*)    AS veces_generado
+        COUNT(*)       AS veces_generado
       FROM rotulos_mini rm
-      LEFT JOIN codigos_global cg ON cg.barra = rm.barra
-      LEFT JOIN usuarios u        ON u.user_uuid = rm.user_uuid
       WHERE rm.f_fin_dt >= CURDATE()
         AND rm.f_inicio_dt <= CURDATE()
         AND TRIM(rm.barra) != ''
-      GROUP BY rm.barra
+      GROUP BY rm.barra, rm.user_uuid, rm.descripcion, rm.precio, rm.f_inicio, rm.f_fin
       ORDER BY veces_generado DESC
       LIMIT ? OFFSET ?
     `, [limit, offset]);
 
-    let recomendadas = await agregarPrecioActual(rows);
-    recomendadas = await agregarImagenFallback(recomendadas);
+    const recomendadas = await enriquecer(rows);
     const result = { ok: true, total: recomendadas.length, hasMore: rows.length === limit, recomendadas };
     setCache(cacheKey, result, TTL.recomendadas);
     res.json(result);
@@ -139,7 +159,7 @@ router.get('/recomendadas', async (req, res) => {
   }
 });
 
-// GET /api/ofertas/hoy — Ofertas con fecha de inicio hoy y aún activas
+// GET /api/ofertas/hoy
 router.get('/hoy', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit) || 30, 100);
@@ -150,31 +170,22 @@ router.get('/hoy', async (req, res) => {
     const [rows] = await pool.query(`
       SELECT
         rm.barra,
+        rm.user_uuid,
         rm.descripcion,
         rm.precio   AS precio_oferta,
         rm.f_inicio,
         rm.f_fin,
-        rm.cantidad,
-        cg.imagen,
-        cg.categoria,
-        cg.marca,
-        u.user_uuid,
-        u.username,
-        u.nombre,
-        u.photo
+        rm.cantidad
       FROM rotulos_mini rm
-      LEFT JOIN codigos_global cg ON cg.barra = rm.barra
-      LEFT JOIN usuarios u        ON u.user_uuid = rm.user_uuid
       WHERE (rm.f_inicio_dt = CURDATE() OR STR_TO_DATE(rm.f_inicio, '%d/%m/%Y') = CURDATE())
         AND (rm.f_fin_dt >= CURDATE() OR rm.f_fin_dt IS NULL)
         AND TRIM(rm.barra) != ''
-      GROUP BY rm.barra, rm.precio, rm.f_inicio, rm.f_fin
+      GROUP BY rm.barra, rm.user_uuid, rm.descripcion, rm.precio, rm.f_inicio, rm.f_fin, rm.cantidad
       ORDER BY rm.fecha DESC
       LIMIT ?
     `, [limit]);
 
-    let hoy = await agregarPrecioActual(rows);
-    hoy = await agregarImagenFallback(hoy);
+    const hoy = await enriquecer(rows);
     const result = { ok: true, total: hoy.length, hoy };
     setCache(cacheKey, result, TTL.hoy);
     res.json(result);
