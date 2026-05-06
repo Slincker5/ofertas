@@ -6,9 +6,9 @@ const router = Router();
 // Cache simple en memoria
 const cache = new Map();
 const TTL = {
-  activas:      60 * 1000,   //  1 minuto
-  recomendadas: 60 * 1000,   //  1 minuto
-  hoy:          60 * 1000,   //  1 minuto
+  activas:      60 * 1000,
+  recomendadas: 60 * 1000,
+  hoy:          60 * 1000,
 };
 
 function getCache(key) {
@@ -22,9 +22,6 @@ function setCache(key, data, ttl) {
   cache.set(key, { data, expires: Date.now() + ttl });
 }
 
-/**
- * Enriquece filas con precio_actual desde codigos usando IN — rápido con índice.
- */
 async function agregarPrecioActual(rows) {
   if (!rows.length) return rows;
   const barras = [...new Set(rows.map(r => r.barra))];
@@ -40,8 +37,9 @@ async function agregarPrecioActual(rows) {
 // GET /api/ofertas/activas
 router.get('/activas', async (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit) || 30, 100);
-    const cacheKey = `activas:${limit}`;
+    const limit  = Math.min(parseInt(req.query.limit)  || 30, 100);
+    const offset = Math.max(parseInt(req.query.offset) || 0,  0);
+    const cacheKey = `activas:${limit}:${offset}`;
     const cached = getCache(cacheKey);
     if (cached) return res.json(cached);
 
@@ -68,11 +66,11 @@ router.get('/activas', async (req, res) => {
         AND TRIM(rm.barra) != ''
       GROUP BY rm.barra
       ORDER BY MAX(rm.fecha) DESC
-      LIMIT ?
-    `, [limit]);
+      LIMIT ? OFFSET ?
+    `, [limit, offset]);
 
     const ofertas = await agregarPrecioActual(rows);
-    const result = { ok: true, total: ofertas.length, ofertas };
+    const result = { ok: true, total: ofertas.length, hasMore: rows.length === limit, ofertas };
     setCache(cacheKey, result, TTL.activas);
     res.json(result);
   } catch (err) {
@@ -84,8 +82,9 @@ router.get('/activas', async (req, res) => {
 // GET /api/ofertas/recomendadas
 router.get('/recomendadas', async (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit) || 20, 100);
-    const cacheKey = `recomendadas:${limit}`;
+    const limit  = Math.min(parseInt(req.query.limit)  || 20, 100);
+    const offset = Math.max(parseInt(req.query.offset) || 0,  0);
+    const cacheKey = `recomendadas:${limit}:${offset}`;
     const cached = getCache(cacheKey);
     if (cached) return res.json(cached);
 
@@ -112,11 +111,11 @@ router.get('/recomendadas', async (req, res) => {
         AND TRIM(rm.barra) != ''
       GROUP BY rm.barra
       ORDER BY veces_generado DESC
-      LIMIT ?
-    `, [limit]);
+      LIMIT ? OFFSET ?
+    `, [limit, offset]);
 
     const recomendadas = await agregarPrecioActual(rows);
-    const result = { ok: true, total: recomendadas.length, recomendadas };
+    const result = { ok: true, total: recomendadas.length, hasMore: rows.length === limit, recomendadas };
     setCache(cacheKey, result, TTL.recomendadas);
     res.json(result);
   } catch (err) {
@@ -125,8 +124,7 @@ router.get('/recomendadas', async (req, res) => {
   }
 });
 
-
-// GET /api/ofertas/hoy — Ofertas cuya fecha de inicio es hoy
+// GET /api/ofertas/hoy — Ofertas con fecha de inicio hoy y aún activas
 router.get('/hoy', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit) || 30, 100);
