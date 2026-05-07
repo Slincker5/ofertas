@@ -2,6 +2,7 @@ const { Router } = require('express');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const { randomUUID } = require('crypto');
 const pool = require('../db/connection');
+const { clearCache } = require('./ofertas');
 
 const router = Router();
 
@@ -205,16 +206,18 @@ router.post('/subir', async (req, res) => {
 
     const cdnUrl = `${process.env.CDN_BASE_URL}/${key}`;
 
-    // Actualizar en codigos (solo si no tiene imagen)
+    // Actualizar en codigos
     const [resultCodigos] = await pool.query(
-      `UPDATE codigos SET imagen = ? WHERE TRIM(barra) = ? AND (imagen IS NULL OR TRIM(imagen) = '')`,
+      `UPDATE codigos SET imagen = ? WHERE TRIM(barra) = ?`,
       [cdnUrl, barra.trim()]
     );
     // También actualizar en codigos_global si existe la fila
     const [resultGlobal] = await pool.query(
-      `UPDATE codigos_global SET imagen = ? WHERE TRIM(barra) = ? AND (imagen IS NULL OR TRIM(imagen) = '')`,
+      `UPDATE codigos_global SET imagen = ? WHERE TRIM(barra) = ?`,
       [cdnUrl, barra.trim()]
     );
+
+    clearCache();
 
     res.json({
       ok: true,
@@ -252,13 +255,15 @@ router.post('/subir-base64', async (req, res) => {
     const cdnUrl = `${process.env.CDN_BASE_URL}/${key}`;
 
     const [resultCodigos] = await pool.query(
-      `UPDATE codigos SET imagen = ? WHERE TRIM(barra) = ? AND (imagen IS NULL OR TRIM(imagen) = '')`,
+      `UPDATE codigos SET imagen = ? WHERE TRIM(barra) = ?`,
       [cdnUrl, barra.trim()]
     );
     const [resultGlobal] = await pool.query(
-      `UPDATE codigos_global SET imagen = ? WHERE TRIM(barra) = ? AND (imagen IS NULL OR TRIM(imagen) = '')`,
+      `UPDATE codigos_global SET imagen = ? WHERE TRIM(barra) = ?`,
       [cdnUrl, barra.trim()]
     );
+
+    clearCache();
 
     res.json({
       ok: true,

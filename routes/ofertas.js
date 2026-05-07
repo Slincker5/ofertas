@@ -195,4 +195,9 @@ router.get('/hoy', async (req, res) => {
   }
 });
 
+function clearCache() {
+  cache.clear();
+}
+
 module.exports = router;
+module.exports.clearCache = clearCache;
