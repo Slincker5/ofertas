@@ -95,20 +95,18 @@ router.get('/activas', async (req, res) => {
     if (cached) return res.json(cached);
 
     const [rows] = await pool.query(`
-      SELECT
-        rm.barra,
-        rm.user_uuid,
-        MAX(rm.descripcion) AS descripcion,
-        MAX(rm.precio)      AS precio_oferta,
-        MAX(rm.f_inicio)    AS f_inicio,
-        MAX(rm.f_fin)       AS f_fin,
-        MAX(rm.cantidad)    AS cantidad
-      FROM rotulos_mini rm
-      WHERE rm.f_fin_dt >= CURDATE()
-        AND rm.f_inicio_dt <= CURDATE()
-        AND TRIM(rm.barra) != ''
-      GROUP BY rm.barra, rm.user_uuid
-      ORDER BY MAX(rm.fecha) DESC
+      SELECT barra, user_uuid, descripcion, precio AS precio_oferta, f_inicio, f_fin, cantidad, fecha
+      FROM (
+        SELECT
+          barra, user_uuid, descripcion, precio, f_inicio, f_fin, cantidad, fecha,
+          ROW_NUMBER() OVER (PARTITION BY barra ORDER BY fecha DESC) AS rn
+        FROM rotulos_mini
+        WHERE f_fin_dt >= CURDATE()
+          AND f_inicio_dt <= CURDATE()
+          AND barra REGEXP '^[0-9]{6,}$'
+      ) sub
+      WHERE rn = 1
+      ORDER BY fecha DESC
       LIMIT ? OFFSET ?
     `, [limit, offset]);
 
@@ -134,17 +132,26 @@ router.get('/recomendadas', async (req, res) => {
     const [rows] = await pool.query(`
       SELECT
         rm.barra,
-        rm.user_uuid,
-        rm.descripcion,
-        rm.precio      AS precio_oferta,
-        rm.f_inicio,
-        rm.f_fin,
-        COUNT(*)       AS veces_generado
+        MAX(rm.user_uuid)   AS user_uuid,
+        MAX(rm.descripcion) AS descripcion,
+        (
+          SELECT r2.precio
+          FROM rotulos_mini r2
+          WHERE r2.barra = rm.barra
+            AND r2.f_fin_dt >= CURDATE()
+            AND r2.f_inicio_dt <= CURDATE()
+          GROUP BY r2.precio
+          ORDER BY COUNT(*) DESC
+          LIMIT 1
+        )                   AS precio_oferta,
+        MAX(rm.f_inicio)    AS f_inicio,
+        MAX(rm.f_fin)       AS f_fin,
+        COUNT(*)            AS veces_generado
       FROM rotulos_mini rm
       WHERE rm.f_fin_dt >= CURDATE()
         AND rm.f_inicio_dt <= CURDATE()
-        AND TRIM(rm.barra) != ''
-      GROUP BY rm.barra, rm.user_uuid, rm.descripcion, rm.precio, rm.f_inicio, rm.f_fin
+        AND rm.barra REGEXP '^[0-9]{6,}$'
+      GROUP BY rm.barra
       ORDER BY veces_generado DESC
       LIMIT ? OFFSET ?
     `, [limit, offset]);
@@ -168,20 +175,18 @@ router.get('/hoy', async (req, res) => {
     if (cached) return res.json(cached);
 
     const [rows] = await pool.query(`
-      SELECT
-        rm.barra,
-        rm.user_uuid,
-        rm.descripcion,
-        rm.precio   AS precio_oferta,
-        rm.f_inicio,
-        rm.f_fin,
-        rm.cantidad
-      FROM rotulos_mini rm
-      WHERE (rm.f_inicio_dt = CURDATE() OR STR_TO_DATE(rm.f_inicio, '%d/%m/%Y') = CURDATE())
-        AND (rm.f_fin_dt >= CURDATE() OR rm.f_fin_dt IS NULL)
-        AND TRIM(rm.barra) != ''
-      GROUP BY rm.barra, rm.user_uuid, rm.descripcion, rm.precio, rm.f_inicio, rm.f_fin, rm.cantidad
-      ORDER BY rm.fecha DESC
+      SELECT barra, user_uuid, descripcion, precio AS precio_oferta, f_inicio, f_fin, cantidad, fecha
+      FROM (
+        SELECT
+          barra, user_uuid, descripcion, precio, f_inicio, f_fin, cantidad, fecha,
+          ROW_NUMBER() OVER (PARTITION BY barra ORDER BY fecha DESC) AS rn
+        FROM rotulos_mini
+        WHERE (f_inicio_dt = CURDATE() OR STR_TO_DATE(f_inicio, '%d/%m/%Y') = CURDATE())
+          AND (f_fin_dt >= CURDATE() OR f_fin_dt IS NULL)
+          AND barra REGEXP '^[0-9]{6,}$'
+      ) sub
+      WHERE rn = 1
+      ORDER BY fecha DESC
       LIMIT ?
     `, [limit]);
 
