@@ -85,17 +85,20 @@ async function enriquecer(rows) {
   return agregarUsuarios(merged);
 }
 
-// GET /api/ofertas/activas
-router.get('/activas', async (req, res) => {
+// GET /api/ofertas/buscar?q=leche&categoria=lacteos&limit=30&offset=0
+router.get('/buscar', async (req, res) => {
   try {
-    const limit  = Math.min(parseInt(req.query.limit)  || 30, 100);
-    const offset = Math.max(parseInt(req.query.offset) || 0,  0);
-    const cacheKey = `activas:${limit}:${offset}`;
-    const cached = getCache(cacheKey);
-    if (cached) return res.json(cached);
+    const q = req.query.q?.trim();
+    if (!q) return res.json({ ok: true, total: 0, hasMore: false, resultados: [] });
 
-    const [rows] = await pool.query(`
-      SELECT barra, user_uuid, descripcion, precio AS precio_oferta, f_inicio, f_fin, cantidad, fecha
+    const limit     = Math.min(parseInt(req.query.limit)  || 30, 100);
+    const offset    = Math.max(parseInt(req.query.offset) || 0,  0);
+    const categoria = req.query.categoria?.trim() || null;
+    const like      = `%${q}%`;
+
+    let sql = `
+      SELECT sub.barra, sub.user_uuid, sub.descripcion, sub.precio AS precio_oferta,
+             sub.f_inicio, sub.f_fin, sub.cantidad, sub.fecha
       FROM (
         SELECT
           barra, user_uuid, descripcion, precio, f_inicio, f_fin, cantidad, fecha,
@@ -105,11 +108,92 @@ router.get('/activas', async (req, res) => {
           AND f_inicio_dt <= CURDATE()
           AND barra REGEXP '^[0-9]{6,}$'
       ) sub
-      WHERE rn = 1
-      ORDER BY fecha DESC
-      LIMIT ? OFFSET ?
-    `, [limit, offset]);
+      LEFT JOIN codigos_global cg ON cg.barra = sub.barra
+      WHERE sub.rn = 1
+        AND (sub.descripcion LIKE ? OR sub.barra LIKE ? OR cg.marca LIKE ? OR cg.categoria LIKE ?)
+    `;
+    const params = [like, like, like, like];
 
+    if (categoria) {
+      sql += ` AND cg.categoria = ?`;
+      params.push(categoria);
+    }
+
+    sql += ` ORDER BY sub.fecha DESC LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+
+    const [rows] = await pool.query(sql, params);
+    const resultados = await enriquecer(rows);
+    res.json({ ok: true, total: resultados.length, hasMore: rows.length === limit, resultados });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/ofertas/categorias
+router.get('/categorias', async (req, res) => {
+  try {
+    const cacheKey = 'categorias';
+    const cached = getCache(cacheKey);
+    if (cached) return res.json(cached);
+
+    const [rows] = await pool.query(`
+      SELECT cg.categoria, COUNT(DISTINCT rm.barra) AS total
+      FROM rotulos_mini rm
+      INNER JOIN codigos_global cg ON cg.barra = rm.barra
+      WHERE rm.f_fin_dt >= CURDATE()
+        AND rm.f_inicio_dt <= CURDATE()
+        AND rm.barra REGEXP '^[0-9]{6,}$'
+        AND cg.categoria IS NOT NULL
+        AND TRIM(cg.categoria) != ''
+      GROUP BY cg.categoria
+      ORDER BY total DESC
+    `);
+
+    const result = { ok: true, categorias: rows };
+    setCache(cacheKey, result, TTL.activas);
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/ofertas/activas
+router.get('/activas', async (req, res) => {
+  try {
+    const limit     = Math.min(parseInt(req.query.limit)  || 30, 100);
+    const offset    = Math.max(parseInt(req.query.offset) || 0,  0);
+    const categoria = req.query.categoria?.trim() || null;
+    const cacheKey  = `activas:${limit}:${offset}:${categoria || ''}`;
+    const cached = getCache(cacheKey);
+    if (cached) return res.json(cached);
+
+    let sql = `
+      SELECT sub.barra, sub.user_uuid, sub.descripcion, sub.precio AS precio_oferta,
+             sub.f_inicio, sub.f_fin, sub.cantidad, sub.fecha
+      FROM (
+        SELECT
+          barra, user_uuid, descripcion, precio, f_inicio, f_fin, cantidad, fecha,
+          ROW_NUMBER() OVER (PARTITION BY barra ORDER BY fecha DESC) AS rn
+        FROM rotulos_mini
+        WHERE f_fin_dt >= CURDATE()
+          AND f_inicio_dt <= CURDATE()
+          AND barra REGEXP '^[0-9]{6,}$'
+      ) sub
+    `;
+    const params = [];
+
+    if (categoria) {
+      sql += ` INNER JOIN codigos_global cg ON cg.barra = sub.barra AND cg.categoria = ?`;
+      params.push(categoria);
+    }
+
+    sql += ` WHERE sub.rn = 1 ORDER BY sub.fecha DESC LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+
+    const [rows] = await pool.query(sql, params);
     const ofertas = await enriquecer(rows);
     const result = { ok: true, total: ofertas.length, hasMore: rows.length === limit, ofertas };
     setCache(cacheKey, result, TTL.activas);
@@ -123,13 +207,14 @@ router.get('/activas', async (req, res) => {
 // GET /api/ofertas/recomendadas
 router.get('/recomendadas', async (req, res) => {
   try {
-    const limit  = Math.min(parseInt(req.query.limit)  || 20, 100);
-    const offset = Math.max(parseInt(req.query.offset) || 0,  0);
-    const cacheKey = `recomendadas:${limit}:${offset}`;
+    const limit     = Math.min(parseInt(req.query.limit)  || 20, 100);
+    const offset    = Math.max(parseInt(req.query.offset) || 0,  0);
+    const categoria = req.query.categoria?.trim() || null;
+    const cacheKey  = `recomendadas:${limit}:${offset}:${categoria || ''}`;
     const cached = getCache(cacheKey);
     if (cached) return res.json(cached);
 
-    const [rows] = await pool.query(`
+    let sql = `
       SELECT
         rm.barra,
         MAX(rm.user_uuid)   AS user_uuid,
@@ -148,14 +233,25 @@ router.get('/recomendadas', async (req, res) => {
         MAX(rm.f_fin)       AS f_fin,
         COUNT(*)            AS veces_generado
       FROM rotulos_mini rm
+    `;
+    const params = [];
+
+    if (categoria) {
+      sql += ` INNER JOIN codigos_global cg ON cg.barra = rm.barra AND cg.categoria = ?`;
+      params.push(categoria);
+    }
+
+    sql += `
       WHERE rm.f_fin_dt >= CURDATE()
         AND rm.f_inicio_dt <= CURDATE()
         AND rm.barra REGEXP '^[0-9]{6,}$'
       GROUP BY rm.barra
       ORDER BY veces_generado DESC
       LIMIT ? OFFSET ?
-    `, [limit, offset]);
+    `;
+    params.push(limit, offset);
 
+    const [rows] = await pool.query(sql, params);
     const recomendadas = await enriquecer(rows);
     const result = { ok: true, total: recomendadas.length, hasMore: rows.length === limit, recomendadas };
     setCache(cacheKey, result, TTL.recomendadas);
@@ -169,13 +265,15 @@ router.get('/recomendadas', async (req, res) => {
 // GET /api/ofertas/hoy
 router.get('/hoy', async (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit) || 30, 100);
-    const cacheKey = `hoy:${limit}`;
+    const limit     = Math.min(parseInt(req.query.limit) || 30, 100);
+    const categoria = req.query.categoria?.trim() || null;
+    const cacheKey  = `hoy:${limit}:${categoria || ''}`;
     const cached = getCache(cacheKey);
     if (cached) return res.json(cached);
 
-    const [rows] = await pool.query(`
-      SELECT barra, user_uuid, descripcion, precio AS precio_oferta, f_inicio, f_fin, cantidad, fecha
+    let sql = `
+      SELECT sub.barra, sub.user_uuid, sub.descripcion, sub.precio AS precio_oferta,
+             sub.f_inicio, sub.f_fin, sub.cantidad, sub.fecha
       FROM (
         SELECT
           barra, user_uuid, descripcion, precio, f_inicio, f_fin, cantidad, fecha,
@@ -185,11 +283,18 @@ router.get('/hoy', async (req, res) => {
           AND (f_fin_dt >= CURDATE() OR f_fin_dt IS NULL)
           AND barra REGEXP '^[0-9]{6,}$'
       ) sub
-      WHERE rn = 1
-      ORDER BY fecha DESC
-      LIMIT ?
-    `, [limit]);
+    `;
+    const params = [];
 
+    if (categoria) {
+      sql += ` INNER JOIN codigos_global cg ON cg.barra = sub.barra AND cg.categoria = ?`;
+      params.push(categoria);
+    }
+
+    sql += ` WHERE sub.rn = 1 ORDER BY sub.fecha DESC LIMIT ?`;
+    params.push(limit);
+
+    const [rows] = await pool.query(sql, params);
     const hoy = await enriquecer(rows);
     const result = { ok: true, total: hoy.length, hoy };
     setCache(cacheKey, result, TTL.hoy);
