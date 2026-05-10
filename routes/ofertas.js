@@ -8,6 +8,7 @@ const TTL = {
   activas:      60 * 1000,
   recomendadas: 60 * 1000,
   hoy:          60 * 1000,
+  busqueda:     30 * 1000,
 };
 
 function getCache(key) {
@@ -96,7 +97,18 @@ router.get('/buscar', async (req, res) => {
     const categoria = req.query.categoria?.trim() || null;
     const like      = `%${q}%`;
 
-    // Filtrar DENTRO del subquery para que ROW_NUMBER() opere solo sobre filas coincidentes
+    const cacheKey = `busqueda:${q}:${categoria || ''}:${limit}:${offset}`;
+    const cached = getCache(cacheKey);
+    if (cached) return res.json(cached);
+
+    // Búsqueda por código (solo dígitos) → prefijo en índice BTREE de barra
+    // Búsqueda por texto → FULLTEXT index en descripcion (ft_descripcion)
+    const soloDigitos = /^\d+$/.test(q);
+    const condicion   = soloDigitos
+      ? `barra LIKE ?`
+      : `MATCH(descripcion) AGAINST (? IN BOOLEAN MODE)`;
+    const valorBusqueda = soloDigitos ? `${q}%` : q;
+
     let sql = `
       SELECT barra, user_uuid, descripcion, precio AS precio_oferta,
              f_inicio, f_fin, cantidad, fecha
@@ -107,15 +119,10 @@ router.get('/buscar', async (req, res) => {
         FROM rotulos_mini
         WHERE f_fin_dt >= CURDATE()
           AND f_inicio_dt <= CURDATE()
-          AND barra REGEXP '^[0-9]{6,}$'
-          AND (
-            descripcion LIKE ?
-            OR barra LIKE ?
-            OR barra IN (SELECT barra FROM codigos_global WHERE marca LIKE ? OR categoria LIKE ?)
-          )
+          AND ${condicion}
       ) sub
     `;
-    const params = [like, like, like, like];
+    const params = [valorBusqueda];
 
     if (categoria) {
       sql += ` INNER JOIN codigos_global cg ON cg.barra = sub.barra AND cg.categoria = ?`;
@@ -127,7 +134,9 @@ router.get('/buscar', async (req, res) => {
 
     const [rows] = await pool.query(sql, params);
     const resultados = await enriquecer(rows);
-    res.json({ ok: true, total: resultados.length, hasMore: rows.length === limit, resultados });
+    const result = { ok: true, total: resultados.length, hasMore: rows.length === limit, resultados };
+    setCache(cacheKey, result, TTL.busqueda);
+    res.json(result);
   } catch (err) {
     console.error(err);
     res.status(500).json({ ok: false, error: err.message });
