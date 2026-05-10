@@ -96,9 +96,10 @@ router.get('/buscar', async (req, res) => {
     const categoria = req.query.categoria?.trim() || null;
     const like      = `%${q}%`;
 
+    // Filtrar DENTRO del subquery para que ROW_NUMBER() opere solo sobre filas coincidentes
     let sql = `
-      SELECT sub.barra, sub.user_uuid, sub.descripcion, sub.precio AS precio_oferta,
-             sub.f_inicio, sub.f_fin, sub.cantidad, sub.fecha
+      SELECT barra, user_uuid, descripcion, precio AS precio_oferta,
+             f_inicio, f_fin, cantidad, fecha
       FROM (
         SELECT
           barra, user_uuid, descripcion, precio, f_inicio, f_fin, cantidad, fecha,
@@ -107,19 +108,21 @@ router.get('/buscar', async (req, res) => {
         WHERE f_fin_dt >= CURDATE()
           AND f_inicio_dt <= CURDATE()
           AND barra REGEXP '^[0-9]{6,}$'
+          AND (
+            descripcion LIKE ?
+            OR barra LIKE ?
+            OR barra IN (SELECT barra FROM codigos_global WHERE marca LIKE ? OR categoria LIKE ?)
+          )
       ) sub
-      LEFT JOIN codigos_global cg ON cg.barra = sub.barra
-      WHERE sub.rn = 1
-        AND (sub.descripcion LIKE ? OR sub.barra LIKE ? OR cg.marca LIKE ? OR cg.categoria LIKE ?)
     `;
     const params = [like, like, like, like];
 
     if (categoria) {
-      sql += ` AND cg.categoria = ?`;
+      sql += ` INNER JOIN codigos_global cg ON cg.barra = sub.barra AND cg.categoria = ?`;
       params.push(categoria);
     }
 
-    sql += ` ORDER BY sub.fecha DESC LIMIT ? OFFSET ?`;
+    sql += ` WHERE rn = 1 ORDER BY fecha DESC LIMIT ? OFFSET ?`;
     params.push(limit, offset);
 
     const [rows] = await pool.query(sql, params);
