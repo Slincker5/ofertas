@@ -119,6 +119,7 @@ router.get('/buscar', async (req, res) => {
         FROM rotulos_mini
         WHERE f_fin_dt >= CURDATE()
           AND f_inicio_dt <= CURDATE()
+          AND barra REGEXP '^[0-9]{6,}$'
           AND ${condicion}
       ) sub
     `;

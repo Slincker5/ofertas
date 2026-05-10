@@ -3,6 +3,7 @@ const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const { randomUUID } = require('crypto');
 const pool = require('../db/connection');
 const { clearCache } = require('./ofertas');
+const { authAdmin } = require('../middleware/auth');
 
 const router = Router();
 
@@ -180,7 +181,7 @@ router.get('/buscar', async (req, res) => {
 
 // ── POST /api/imagenes/subir ──────────────────────────────────────────────
 // body: { barra, imageUrl }
-router.post('/subir', async (req, res) => {
+router.post('/subir', authAdmin, async (req, res) => {
   const { barra, imageUrl } = req.body;
   if (!barra || !imageUrl) return res.status(400).json({ ok: false, error: 'barra e imageUrl requeridos' });
 
@@ -235,7 +236,7 @@ router.post('/subir', async (req, res) => {
 
 // ── POST /api/imagenes/subir-base64 ──────────────────────────────────────
 // body: { barra, imageBase64, contentType }
-router.post('/subir-base64', async (req, res) => {
+router.post('/subir-base64', authAdmin, async (req, res) => {
   const { barra, imageBase64, contentType = 'image/jpeg' } = req.body;
   if (!barra || !imageBase64) return res.status(400).json({ ok: false, error: 'barra e imageBase64 requeridos' });
 
