@@ -8,7 +8,14 @@ function authJWT(req, res, next) {
   }
   const token = header.slice(7);
   try {
-    req.user = jwt.verify(token, process.env.JWT_SECRET);
+    const payload = jwt.verify(token, process.env.JWT_SECRET);
+    // Soporta payload plano o anidado en .data
+    const data = payload.data || payload;
+    req.user = {
+      user_uuid: data.user_uuid || data.uuid || data.sub,
+      username:  data.username,
+      rol:       data.rol,
+    };
     next();
   } catch {
     return res.status(401).json({ ok: false, error: 'Token inválido o expirado' });
