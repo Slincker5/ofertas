@@ -318,6 +318,41 @@ router.get('/hoy', async (req, res) => {
   }
 });
 
+// GET /api/ofertas/barra/:ean  — verifica si un EAN específico está en oferta activa
+router.get('/barra/:ean', async (req, res) => {
+  try {
+    const ean = req.params.ean?.trim();
+    if (!ean || !/^\d{6,}$/.test(ean)) {
+      return res.json({ ok: true, enOferta: false, oferta: null });
+    }
+
+    const cacheKey = `barra:${ean}`;
+    const cached = getCache(cacheKey);
+    if (cached) return res.json(cached);
+
+    const [rows] = await pool.query(
+      `SELECT barra, descripcion, precio AS precio_oferta, f_inicio, f_fin
+       FROM rotulos_mini
+       WHERE barra = ?
+         AND f_fin_dt >= CURDATE()
+         AND f_inicio_dt <= CURDATE()
+       ORDER BY fecha DESC
+       LIMIT 1`,
+      [ean]
+    );
+
+    const result = rows.length
+      ? { ok: true, enOferta: true,  oferta: rows[0] }
+      : { ok: true, enOferta: false, oferta: null };
+
+    setCache(cacheKey, result, TTL.busqueda);
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 function clearCache() {
   cache.clear();
 }
